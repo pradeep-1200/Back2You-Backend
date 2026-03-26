@@ -25,6 +25,10 @@ const itemSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    location: {
+      type: String,
+      default: "",
+    },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -35,6 +39,7 @@ const itemSchema = new mongoose.Schema(
         item: { type: mongoose.Schema.Types.ObjectId, ref: "Item" },
         score: Number,
         commonTags: [String],
+        explanation: String,
       },
     ],
   },

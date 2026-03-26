@@ -19,9 +19,16 @@ const claimSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected"],
-      default: "pending",
+      enum: ["requested", "approved", "completed", "rejected"],
+      default: "requested",
     },
+    messages: [
+      {
+        sender: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        text: String,
+        createdAt: { type: Date, default: Date.now }
+      }
+    ]
   },
   { timestamps: true }
 );

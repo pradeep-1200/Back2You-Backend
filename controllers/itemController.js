@@ -9,29 +9,45 @@ const findMatches = async (newItem) => {
   const matchesInfo = [];
 
   candidates.forEach((candidate) => {
-    // Tag overlap
-    const commonTags = newItem.tags.filter((tag) =>
-      candidate.tags.map((t) => t.toLowerCase()).includes(tag.toLowerCase())
+    // Fuzzy matching helpers
+    const getWords = (str) => (str || "").toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const countOverlap = (arr1, arr2) => arr1.filter(w1 => arr2.some(w2 => w1.includes(w2) || w2.includes(w1))).length;
+
+    // 1. Tags match (50%)
+    const commonTags = newItem.tags.filter((t1) =>
+      candidate.tags.some((t2) => t1.toLowerCase().includes(t2.toLowerCase()) || t2.toLowerCase().includes(t1.toLowerCase()))
     );
-    
-    // Keyword overlap in titles
-    const newWords = newItem.title.toLowerCase().split(/\s+/);
-    const candidateWords = candidate.title.toLowerCase().split(/\s+/);
-    const commonWords = newWords.filter((w) => candidateWords.includes(w) && w.length > 2);
+    const tagScore = newItem.tags.length ? (commonTags.length / Math.max(newItem.tags.length, candidate.tags.length)) * 50 : 0;
 
-    const totalFeatures = Math.max(newItem.tags.length + newWords.length, 1);
-    const matchedFeatures = commonTags.length + commonWords.length;
-    
-    // Score out of 100
-    let score = Math.round((matchedFeatures / totalFeatures) * 100);
-    // Cap score at 100
-    if (score > 100) score = 100;
+    // 2. Title match (30%)
+    const newTitleWords = getWords(newItem.title);
+    const candTitleWords = getWords(candidate.title);
+    const titleOverlap = countOverlap(newTitleWords, candTitleWords);
+    const titleScore = newTitleWords.length ? (titleOverlap / Math.max(newTitleWords.length, candTitleWords.length)) * 30 : 0;
 
-    if (score > 0) {
+    // 3. Description match (20%)
+    const newDescWords = getWords(newItem.description);
+    const candDescWords = getWords(candidate.description);
+    const descOverlap = countOverlap(newDescWords, candDescWords);
+    const descScore = newDescWords.length ? (descOverlap / Math.max(newDescWords.length, candDescWords.length)) * 20 : 0;
+
+    const totalScore = Math.round(tagScore + titleScore + descScore);
+
+    if (totalScore > 10) { // Minimum threshold
+      let explanationParts = [];
+      if (tagScore > 10) explanationParts.push("similar tags");
+      if (titleScore > 10) explanationParts.push("matching title");
+      if (descScore > 5) explanationParts.push("matching description");
+      
+      const explanation = explanationParts.length 
+        ? `Matched because of ${explanationParts.join(" and ")}`
+        : "Partial match found";
+
       matchesInfo.push({
         item: candidate._id,
-        score,
+        score: totalScore > 100 ? 100 : totalScore,
         commonTags,
+        explanation
       });
     }
   });
@@ -42,7 +58,7 @@ const findMatches = async (newItem) => {
 // ─── POST /items ──────────────────────────────────────────────────────────────
 const createItem = async (req, res) => {
   try {
-    const { title, description, status, tags, userId } = req.body;
+    const { title, description, status, tags, userId, location } = req.body;
 
     if (!title || !status || !userId)
       return res.status(400).json({ error: "title, status, and userId are required" });
@@ -63,9 +79,14 @@ const createItem = async (req, res) => {
       description,
       status,
       imageUrl,
+      location,
       tags: parsedTags,
       userId,
     });
+
+    // Add 5 points for reporting
+    const User = require("../models/User");
+    await User.findByIdAndUpdate(userId, { $inc: { points: 5 } });
 
     // Run matching algorithm
     const matchIds = await findMatches(item);
@@ -95,30 +116,66 @@ const getAllItems = async (req, res) => {
   }
 };
 
-// ─── GET /items/search?q=bag ──────────────────────────────────────────────────
+// ─── GET /items/search?q=bag&location=newyork&date=recently ────────────────
 const searchItems = async (req, res) => {
   try {
-    const { q, status } = req.query;
-    if (!q) return res.status(400).json({ error: "Search query is required" });
+    const { q, status, location, category, date } = req.query;
+    
+    // Build query object
+    let query = {};
+    if (status) query.status = status;
+    
+    // Handle date filtering
+    if (date) {
+      const currentDate = new Date();
+      if (date === 'today') {
+        currentDate.setHours(0,0,0,0);
+        query.createdAt = { $gte: currentDate };
+      } else if (date === 'week') {
+        currentDate.setDate(currentDate.getDate() - 7);
+        query.createdAt = { $gte: currentDate };
+      } else if (date === 'month') {
+        currentDate.setMonth(currentDate.getMonth() - 1);
+        query.createdAt = { $gte: currentDate };
+      }
+    }
 
-    const keywords = q.toLowerCase().split(/\s+/).filter(Boolean);
-
-    let items = await Item.find(status ? { status } : {})
+    let items = await Item.find(query)
       .populate("userId", "name email")
       .sort({ createdAt: -1 });
 
-    // Filter: keyword matches tag OR title
-    const results = items.filter((item) => {
-      const tagMatch = item.tags.some((tag) =>
-        keywords.some((word) => tag.toLowerCase().includes(word))
+    // Apply location filtering
+    if (location) {
+      items = items.filter(item => 
+        item.location && item.location.toLowerCase().includes(location.toLowerCase())
       );
-      const titleMatch = keywords.some((word) =>
-        item.title.toLowerCase().includes(word)
-      );
-      return tagMatch || titleMatch;
-    });
+    }
 
-    res.json(results);
+    // Apply category filtering (assuming categories are stored in tags)
+    if (category) {
+      items = items.filter(item => 
+        item.tags.some(tag => tag.toLowerCase() === category.toLowerCase())
+      );
+    }
+
+    // Apply keyword filtering
+    if (q) {
+      const keywords = q.toLowerCase().split(/\s+/).filter(Boolean);
+      items = items.filter((item) => {
+        const tagMatch = item.tags.some((tag) =>
+          keywords.some((word) => tag.toLowerCase().includes(word))
+        );
+        const titleMatch = keywords.some((word) =>
+          item.title.toLowerCase().includes(word)
+        );
+        const descMatch = keywords.some((word) =>
+          item.description.toLowerCase().includes(word)
+        );
+        return tagMatch || titleMatch || descMatch;
+      });
+    }
+
+    res.json(items);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

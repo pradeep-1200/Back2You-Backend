@@ -28,4 +28,63 @@ const getAllUsers = async (req, res) => {
   }
 };
 
-module.exports = { createUser, getAllUsers };
+const Item = require("../models/Item");
+const Claim = require("../models/Claim");
+
+// GET /users/:id/items — Get all items created by user
+const getUserItems = async (req, res) => {
+  try {
+    const items = await Item.find({ userId: req.params.id }).sort({ createdAt: -1 });
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// GET /users/:id/claims — Get all claims by user
+const getUserClaims = async (req, res) => {
+  try {
+    const claims = await Claim.find({ userId: req.params.id })
+      .populate("itemId", "title status imageUrl")
+      .sort({ createdAt: -1 });
+    res.json(claims);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// POST /users/save/:itemId — Save/Bookmark an item
+const saveItem = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const itemId = req.params.itemId;
+    const isSaved = user.savedItems.includes(itemId);
+
+    if (isSaved) {
+      user.savedItems = user.savedItems.filter((id) => id.toString() !== itemId);
+    } else {
+      user.savedItems.push(itemId);
+    }
+
+    await user.save();
+    res.json({ savedItems: user.savedItems });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// GET /users/saved — Get saved items
+const getSavedItems = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).populate("savedItems");
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json(user.savedItems);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+module.exports = { createUser, getAllUsers, getUserItems, getUserClaims, saveItem, getSavedItems };
