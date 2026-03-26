@@ -13,12 +13,30 @@ const createClaim = async (req, res) => {
     const item = await Item.findById(itemId);
     if (!item) return res.status(404).json({ error: "Item not found" });
 
+    // Ensure item status is 'found' (can only claim found items)
+    if (item.status !== "found") {
+      return res.status(400).json({ error: "Only 'found' items can be claimed" });
+    }
+
     // Check duplicate claim
     const existing = await Claim.findOne({ itemId, userId });
     if (existing)
       return res.status(409).json({ error: "You have already claimed this item" });
 
     const claim = await Claim.create({ itemId, userId, proofMessage });
+
+    // Notify item owner
+    const Notification = require("../models/Notification");
+    const notification = await Notification.create({
+      userId: item.userId,
+      message: `Someone submitted a claim for your item: ${item.name}`,
+      type: "claim" // adjust to your types
+    });
+
+    if (req.io) {
+      req.io.to(item.userId.toString()).emit("new notification", notification);
+    }
+
     res.status(201).json(claim);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -29,7 +47,7 @@ const createClaim = async (req, res) => {
 const updateClaimStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    if (!["requested", "approved", "completed", "rejected"].includes(status))
+    if (!["pending", "approved", "completed", "rejected"].includes(status))
       return res.status(400).json({ error: "Invalid status" });
 
     const claim = await Claim.findByIdAndUpdate(
@@ -39,6 +57,11 @@ const updateClaimStatus = async (req, res) => {
     ).populate("itemId userId");
 
     if (!claim) return res.status(404).json({ error: "Claim not found" });
+
+    // Ensure item status is updated if approved
+    if (status === "approved") {
+      await Item.findByIdAndUpdate(claim.itemId._id, { status: "claimed" });
+    }
 
     // Gamification: Add 10 points if claim is completed
     if (status === "completed") {
@@ -54,11 +77,15 @@ const updateClaimStatus = async (req, res) => {
       }
 
       // Notify users
-      await Notification.create({
+      const notification = await Notification.create({
         userId: claim.userId._id, // notify claimer
         message: "Your claim has been completed successfully. Don't forget to leave feedback!",
         type: "system"
       });
+
+      if (req.io) {
+        req.io.to(claim.userId._id.toString()).emit("new notification", notification);
+      }
     }
 
     res.json(claim);
@@ -85,6 +112,16 @@ const addClaimMessage = async (req, res) => {
 
     const populatedClaim = await Claim.findById(claim._id)
       .populate("messages.sender", "name avatar");
+
+    if (req.io) {
+      // Notify the other party in the claim
+      const claimObj = await Claim.findById(claim._id).populate("itemId");
+      const otherUserId = claim.userId.toString() === senderId.toString() 
+        ? claimObj.itemId.userId.toString() 
+        : claim.userId.toString();
+        
+      req.io.to(otherUserId).emit("claim message", populatedClaim);
+    }
 
     res.json(populatedClaim);
   } catch (error) {

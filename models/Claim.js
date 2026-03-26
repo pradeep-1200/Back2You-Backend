@@ -19,8 +19,8 @@ const claimSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["requested", "approved", "completed", "rejected"],
-      default: "requested",
+      enum: ["pending", "approved", "completed", "rejected"],
+      default: "pending",
     },
     messages: [
       {

@@ -1,6 +1,8 @@
 const Item = require("../models/Item");
 const { uploadToCloudinary } = require("../utils/cloudinary");
 
+const stopWords = new Set(["a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "with", "about", "as", "by", "of", "is", "are", "was", "were", "it", "this", "that", "these", "those", "i", "you", "he", "she", "we", "they", "my", "your", "his", "her", "our", "their"]);
+
 // ─── Matching Algorithm ───────────────────────────────────────────────────────
 const findMatches = async (newItem) => {
   const oppositeStatus = newItem.status === "lost" ? "found" : "lost";
@@ -9,9 +11,25 @@ const findMatches = async (newItem) => {
   const matchesInfo = [];
 
   candidates.forEach((candidate) => {
-    // Fuzzy matching helpers
-    const getWords = (str) => (str || "").toLowerCase().split(/\s+/).filter(w => w.length > 2);
-    const countOverlap = (arr1, arr2) => arr1.filter(w1 => arr2.some(w2 => w1.includes(w2) || w2.includes(w1))).length;
+    // 1 & 2. Tokenize and normalize text
+    const getWords = (str) => (str || "")
+      .toLowerCase()
+      .replace(/[^\w\s]/gi, '')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !stopWords.has(w));
+      
+    // 3. Matching: exact and fuzzy partial
+    const countOverlap = (arr1, arr2) => {
+      let overlap = 0;
+      arr1.forEach(w1 => {
+        if (arr2.includes(w1)) {
+          overlap += 1;
+        } else if (arr2.some(w2 => w1.includes(w2) || w2.includes(w1))) {
+          overlap += 0.5;
+        }
+      });
+      return overlap;
+    };
 
     // 1. Tags match (50%)
     const commonTags = newItem.tags.filter((t1) =>
@@ -31,16 +49,28 @@ const findMatches = async (newItem) => {
     const descOverlap = countOverlap(newDescWords, candDescWords);
     const descScore = newDescWords.length ? (descOverlap / Math.max(newDescWords.length, candDescWords.length)) * 20 : 0;
 
-    const totalScore = Math.round(tagScore + titleScore + descScore);
+    // 5. Location bonus (+10%)
+    let locationScore = 0;
+    if (newItem.location && candidate.location) {
+      const newLoc = newItem.location.toLowerCase();
+      const candLoc = candidate.location.toLowerCase();
+      if (newLoc.includes(candLoc) || candLoc.includes(newLoc)) {
+        locationScore = 10;
+      }
+    }
 
-    if (totalScore > 10) { // Minimum threshold
+    const totalScore = Math.round(tagScore + titleScore + descScore + locationScore);
+
+    // 4. Matches threshold > 40%
+    if (totalScore > 40) {
       let explanationParts = [];
-      if (tagScore > 10) explanationParts.push("similar tags");
+      if (tagScore > 20) explanationParts.push("similar tags");
       if (titleScore > 10) explanationParts.push("matching title");
-      if (descScore > 5) explanationParts.push("matching description");
+      if (descScore > 10) explanationParts.push("matching description");
+      if (locationScore > 0) explanationParts.push("same location");
       
       const explanation = explanationParts.length 
-        ? `Matched because of ${explanationParts.join(" and ")}`
+        ? `Matched because of ${explanationParts.join(", ")}`
         : "Partial match found";
 
       matchesInfo.push({
@@ -54,6 +84,7 @@ const findMatches = async (newItem) => {
 
   return matchesInfo.sort((a, b) => b.score - a.score).slice(0, 5); // top 5
 };
+
 
 // ─── POST /items ──────────────────────────────────────────────────────────────
 const createItem = async (req, res) => {
@@ -106,7 +137,7 @@ const createItem = async (req, res) => {
 // ─── GET /items ───────────────────────────────────────────────────────────────
 const getAllItems = async (req, res) => {
   try {
-    const items = await Item.find()
+    const items = await Item.find({ status: { $ne: "claimed" } })
       .populate("userId", "name email")
       .populate("matches.item", "title status tags imageUrl")
       .sort({ createdAt: -1 });
@@ -122,7 +153,7 @@ const searchItems = async (req, res) => {
     const { q, status, location, category, date } = req.query;
     
     // Build query object
-    let query = {};
+    let query = { status: { $ne: "claimed" } };
     if (status) query.status = status;
     
     // Handle date filtering
