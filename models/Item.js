@@ -14,7 +14,7 @@ const itemSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["lost", "found"],
+      enum: ["lost", "found", "claimed", "resolved"],
       required: [true, "Status is required"],
     },
     imageUrl: {
@@ -33,6 +33,20 @@ const itemSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+    },
+    matchedItem: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Item",
+      default: null,
+    },
+    resolvedAt: {
+      type: Date,
+      default: null,
+    },
+    resolutionMessage: {
+      type: String,
+      default: "",
+      trim: true,
     },
     matches: [
       {

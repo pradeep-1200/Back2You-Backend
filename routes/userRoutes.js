@@ -8,10 +8,10 @@ const {
   saveItem, 
   getSavedItems 
 } = require("../controllers/userController");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, admin } = require("../middleware/authMiddleware");
 
 router.post("/", createUser);
-router.get("/", getAllUsers);
+router.get("/", protect, admin, getAllUsers);
 
 router.get("/saved", protect, getSavedItems);
 router.post("/save/:itemId", protect, saveItem);

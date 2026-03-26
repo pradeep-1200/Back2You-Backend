@@ -34,6 +34,9 @@ const signup = async (req, res) => {
         email: user.email,
         avatar: user.avatar,
         points: user.points,
+        trustScore: user.trustScore,
+        role: user.role,
+        isBanned: user.isBanned,
         token: generateToken(user._id),
       });
     } else {
@@ -51,6 +54,10 @@ const login = async (req, res) => {
 
     const user = await User.findOne({ email }).select("+password");
 
+    if (user?.isBanned) {
+      return res.status(403).json({ error: "Your account has been banned. Please contact support." });
+    }
+
     if (user && (await user.matchPassword(password))) {
       res.json({
         _id: user._id,
@@ -58,6 +65,10 @@ const login = async (req, res) => {
         email: user.email,
         avatar: user.avatar,
         points: user.points,
+        trustScore: user.trustScore,
+        role: user.role,
+        isBanned: user.isBanned,
+        savedItems: user.savedItems,
         token: generateToken(user._id),
       });
     } else {
@@ -73,7 +84,17 @@ const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).populate("savedItems");
     if (user) {
-      res.json(user);
+      res.json({
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        avatar: user.avatar,
+        points: user.points,
+        trustScore: user.trustScore,
+        role: user.role,
+        isBanned: user.isBanned,
+        savedItems: user.savedItems,
+      });
     } else {
       res.status(404).json({ error: "User not found" });
     }

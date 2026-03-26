@@ -1,4 +1,14 @@
 const User = require("../models/User");
+const { getTrustLevel } = require("../utils/moderation");
+
+const ensureSelfOrAdmin = (req, res) => {
+  if (req.user.role === "admin" || req.user._id.toString() === req.params.id) {
+    return true;
+  }
+
+  res.status(403).json({ error: "Not authorized to access this user resource" });
+  return false;
+};
 
 // POST /users — Create a new user
 const createUser = async (req, res) => {
@@ -34,7 +44,10 @@ const Claim = require("../models/Claim");
 // GET /users/:id/items — Get all items created by user
 const getUserItems = async (req, res) => {
   try {
-    const items = await Item.find({ userId: req.params.id }).sort({ createdAt: -1 });
+    if (!ensureSelfOrAdmin(req, res)) return;
+    const items = await Item.find({ userId: req.params.id })
+      .populate("matchedItem", "title status imageUrl resolvedAt resolutionMessage location")
+      .sort({ createdAt: -1 });
     res.json(items);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -44,6 +57,7 @@ const getUserItems = async (req, res) => {
 // GET /users/:id/claims — Get all claims by user
 const getUserClaims = async (req, res) => {
   try {
+    if (!ensureSelfOrAdmin(req, res)) return;
     const claims = await Claim.find({ userId: req.params.id })
       .populate("itemId", "title status imageUrl")
       .sort({ createdAt: -1 });
@@ -78,7 +92,10 @@ const saveItem = async (req, res) => {
 // GET /users/saved — Get saved items
 const getSavedItems = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).populate("savedItems");
+    const user = await User.findById(req.user._id).populate({
+      path: "savedItems",
+      populate: { path: "matchedItem", select: "title status imageUrl resolvedAt resolutionMessage location" },
+    });
     if (!user) return res.status(404).json({ error: "User not found" });
 
     res.json(user.savedItems);

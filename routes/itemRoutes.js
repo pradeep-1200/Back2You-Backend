@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const {
   createItem,
+  updateItem,
+  deleteItem,
   getAllItems,
   searchItems,
   getItemById,
@@ -10,8 +12,11 @@ const {
   getRecentActivity,
 } = require("../controllers/itemController");
 const { upload } = require("../utils/cloudinary");
+const { protect } = require("../middleware/authMiddleware");
 
-router.post("/", upload.single("image"), createItem);
+router.post("/", protect, upload.single("image"), createItem);
+router.patch("/:id", protect, upload.single("image"), updateItem);
+router.delete("/:id", protect, deleteItem);
 router.get("/", getAllItems);
 router.get("/trending-tags", getTrendingTags);
 router.get("/suggestions", getSuggestions);

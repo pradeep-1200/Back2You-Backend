@@ -1,12 +1,15 @@
 const Item = require("../models/Item");
 const { uploadToCloudinary } = require("../utils/cloudinary");
+const User = require("../models/User");
+const Claim = require("../models/Claim");
+const { adjustTrustScore, notifyAdmins } = require("../utils/moderation");
 
 const stopWords = new Set(["a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "with", "about", "as", "by", "of", "is", "are", "was", "were", "it", "this", "that", "these", "those", "i", "you", "he", "she", "we", "they", "my", "your", "his", "her", "our", "their"]);
 
 // ─── Matching Algorithm ───────────────────────────────────────────────────────
 const findMatches = async (newItem) => {
   const oppositeStatus = newItem.status === "lost" ? "found" : "lost";
-  const candidates = await Item.find({ status: oppositeStatus });
+  const candidates = await Item.find({ status: oppositeStatus }).populate("userId", "trustScore");
 
   const matchesInfo = [];
 
@@ -59,7 +62,8 @@ const findMatches = async (newItem) => {
       }
     }
 
-    const totalScore = Math.round(tagScore + titleScore + descScore + locationScore);
+    const trustBonus = Math.min((candidate.userId?.trustScore || 0) / 20, 5);
+    const totalScore = Math.round(tagScore + titleScore + descScore + locationScore + trustBonus);
 
     // 4. Matches threshold > 40%
     if (totalScore > 40) {
@@ -90,8 +94,9 @@ const findMatches = async (newItem) => {
 const createItem = async (req, res) => {
   try {
     const { title, description, status, tags, userId, location } = req.body;
+    const effectiveUserId = req.user?._id?.toString() || userId;
 
-    if (!title || !status || !userId)
+    if (!title || !status || !effectiveUserId)
       return res.status(400).json({ error: "title, status, and userId are required" });
 
     let imageUrl = "";
@@ -112,12 +117,22 @@ const createItem = async (req, res) => {
       imageUrl,
       location,
       tags: parsedTags,
-      userId,
+      userId: effectiveUserId,
     });
 
-    // Add 5 points for reporting
-    const User = require("../models/User");
-    await User.findByIdAndUpdate(userId, { $inc: { points: 5 } });
+    await User.findByIdAndUpdate(effectiveUserId, { $inc: { points: 5 } });
+    await adjustTrustScore(effectiveUserId, 5);
+
+    const recentReportCount = await Item.countDocuments({
+      userId: effectiveUserId,
+      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+    });
+    if (recentReportCount >= 5) {
+      await notifyAdmins({
+        message: `Suspicious activity: user ${req.user?.name || effectiveUserId} created ${recentReportCount} item reports in the last 24 hours.`,
+        io: req.io,
+      });
+    }
 
     // Run matching algorithm
     const matchIds = await findMatches(item);
@@ -126,6 +141,7 @@ const createItem = async (req, res) => {
 
     // Populate matches for immediate UI response
     const populatedItem = await Item.findById(item._id)
+      .populate("userId", "name email trustScore")
       .populate("matches.item", "title status tags imageUrl");
 
     res.status(201).json({ item: populatedItem, matchCount: matchIds.length });
@@ -134,11 +150,77 @@ const createItem = async (req, res) => {
   }
 };
 
+const updateItem = async (req, res) => {
+  try {
+    const item = await Item.findById(req.params.id);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const isOwner = item.userId.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === "admin";
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ error: "Not authorized to edit this item" });
+    }
+
+    const { title, description, status, tags, location } = req.body;
+    if (title !== undefined) item.title = title;
+    if (description !== undefined) item.description = description;
+    if (status !== undefined) item.status = status;
+    if (location !== undefined) item.location = location;
+    if (tags !== undefined) {
+      item.tags = typeof tags === "string"
+        ? tags.split(",").map((tag) => tag.trim()).filter(Boolean)
+        : tags;
+    }
+
+    if (req.file) {
+      item.imageUrl = await uploadToCloudinary(req.file.path);
+    }
+
+    const matchIds = await findMatches(item);
+    item.matches = matchIds;
+    await item.save();
+
+    const populatedItem = await Item.findById(item._id)
+      .populate("userId", "name email trustScore")
+      .populate("matchedItem", "title status imageUrl resolvedAt resolutionMessage location")
+      .populate("matches.item", "title status tags imageUrl createdAt");
+
+    res.json(populatedItem);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+const deleteItem = async (req, res) => {
+  try {
+    const item = await Item.findById(req.params.id);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const isOwner = item.userId.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === "admin";
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ error: "Not authorized to delete this item" });
+    }
+
+    await Promise.all([
+      Claim.deleteMany({ itemId: item._id }),
+      User.updateMany({ savedItems: item._id }, { $pull: { savedItems: item._id } }),
+      Item.updateMany({ matchedItem: item._id }, { $set: { matchedItem: null } }),
+    ]);
+    await item.deleteOne();
+
+    res.json({ message: "Item deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 // ─── GET /items ───────────────────────────────────────────────────────────────
 const getAllItems = async (req, res) => {
   try {
-    const items = await Item.find({ status: { $ne: "claimed" } })
-      .populate("userId", "name email")
+    const items = await Item.find({ status: { $nin: ["claimed", "resolved"] } })
+      .populate("userId", "name email trustScore")
+      .populate("matchedItem", "title status imageUrl resolvedAt resolutionMessage")
       .populate("matches.item", "title status tags imageUrl")
       .sort({ createdAt: -1 });
     res.json(items);
@@ -153,7 +235,7 @@ const searchItems = async (req, res) => {
     const { q, status, location, category, date } = req.query;
     
     // Build query object
-    let query = { status: { $ne: "claimed" } };
+    let query = { status: { $nin: ["claimed", "resolved"] } };
     if (status) query.status = status;
     
     // Handle date filtering
@@ -172,7 +254,7 @@ const searchItems = async (req, res) => {
     }
 
     let items = await Item.find(query)
-      .populate("userId", "name email")
+      .populate("userId", "name email trustScore")
       .sort({ createdAt: -1 });
 
     // Apply location filtering
@@ -216,7 +298,8 @@ const searchItems = async (req, res) => {
 const getItemById = async (req, res) => {
   try {
     const item = await Item.findById(req.params.id)
-      .populate("userId", "name email")
+      .populate("userId", "name email trustScore")
+      .populate("matchedItem", "title status imageUrl resolvedAt resolutionMessage location")
       .populate("matches.item", "title status tags imageUrl createdAt");
     if (!item) return res.status(404).json({ error: "Item not found" });
     res.json(item);
@@ -228,7 +311,7 @@ const getItemById = async (req, res) => {
 // ─── GET /items/trending-tags ───────────────────────────────────────────────────
 const getTrendingTags = async (req, res) => {
   try {
-    const items = await Item.find({}, "tags");
+    const items = await Item.find({ status: { $nin: ["claimed", "resolved"] } }, "tags");
     const tagCounts = {};
     items.forEach(item => {
       item.tags.forEach(t => {
@@ -253,7 +336,7 @@ const getSuggestions = async (req, res) => {
     const { q } = req.query;
     if (!q) return res.json([]);
 
-    const items = await Item.find({}, "tags");
+    const items = await Item.find({ status: { $nin: ["claimed", "resolved"] } }, "tags");
     const uniqueTags = new Set();
     
     items.forEach(item => {
@@ -275,6 +358,7 @@ const getSuggestions = async (req, res) => {
 const getRecentActivity = async (req, res) => {
   try {
     const items = await Item.find()
+      .where("status").nin(["claimed", "resolved"])
       .populate("userId", "name")
       .sort({ createdAt: -1 })
       .limit(8);
@@ -294,6 +378,8 @@ const getRecentActivity = async (req, res) => {
 
 module.exports = { 
   createItem, 
+  updateItem,
+  deleteItem,
   getAllItems, 
   searchItems, 
   getItemById,

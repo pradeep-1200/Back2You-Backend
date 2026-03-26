@@ -5,22 +5,28 @@ const { protect, admin } = require("../middleware/authMiddleware");
 const {
   getAdminItems,
   deleteAdminItem,
+  resolveAdminItem,
   getAdminClaims,
   updateClaimStatus,
   getAdminUsers,
   banUser,
+  updateUserRole,
   getAdminStats,
+  getAdminActivity,
 } = require("../controllers/adminController");
 
 router.get("/items", protect, admin, getAdminItems);
-router.delete("/item/:id", protect, admin, deleteAdminItem);
+router.delete("/items/:id", protect, admin, deleteAdminItem);
+router.patch("/items/:id/resolve", protect, admin, resolveAdminItem);
 
 router.get("/claims", protect, admin, getAdminClaims);
-router.patch("/claim/:id", protect, admin, updateClaimStatus);
+router.patch("/claims/:id", protect, admin, updateClaimStatus);
 
 router.get("/users", protect, admin, getAdminUsers);
-router.patch("/user/:id/ban", protect, admin, banUser);
+router.patch("/users/:id/ban", protect, admin, banUser);
+router.patch("/users/:id/role", protect, admin, updateUserRole);
 
 router.get("/stats", protect, admin, getAdminStats);
+router.get("/activity", protect, admin, getAdminActivity);
 
 module.exports = router;

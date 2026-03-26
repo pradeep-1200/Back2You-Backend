@@ -37,6 +37,12 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    trustScore: {
+      type: Number,
+      default: 50,
+      min: 0,
+      max: 100,
+    },
     savedItems: [
       {
         type: mongoose.Schema.Types.ObjectId,

@@ -6,10 +6,11 @@ const {
   getClaimsByItem,
   addClaimMessage,
 } = require("../controllers/claimController");
+const { protect } = require("../middleware/authMiddleware");
 
-router.post("/", createClaim);
-router.patch("/:id", updateClaimStatus);
-router.get("/item/:itemId", getClaimsByItem);
-router.post("/:id/message", addClaimMessage);
+router.post("/", protect, createClaim);
+router.patch("/:id", protect, updateClaimStatus);
+router.get("/item/:itemId", protect, getClaimsByItem);
+router.post("/:id/message", protect, addClaimMessage);
 
 module.exports = router;
